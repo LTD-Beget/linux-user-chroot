@@ -162,6 +162,7 @@ main (int      argc,
   int unshare_ipc = 0;
   int unshare_net = 0;
   int unshare_pid = 0;
+  int privileged = 0;
   int clone_flags = 0;
   int child_status = 0;
   pid_t child;
@@ -265,6 +266,11 @@ main (int      argc,
           chdir_target = argv[after_mount_arg_index+1];
           after_mount_arg_index += 2;
         }
+      else if (strcmp (arg, "--privileged") == 0)
+        {
+          privileged = 1;
+          after_mount_arg_index += 1;
+        }
       else
         break;
     }
@@ -324,11 +330,14 @@ main (int      argc,
        * Following the belt-and-suspenders model, we also make a
        * MS_NOSUID bind mount below.
        */
-      if (prctl (PR_SET_NO_NEW_PRIVS, 1) < 0 && errno != EINVAL)
-        fatal_errno ("prctl (PR_SET_NO_NEW_PRIVS)");
-      else if (prctl (PR_SET_SECUREBITS,
-                 SECBIT_NOROOT | SECBIT_NOROOT_LOCKED) < 0)
-        fatal_errno ("prctl (SECBIT_NOROOT)");
+      if (!privileged)
+        {
+          if (prctl (PR_SET_NO_NEW_PRIVS, 1) < 0 && errno != EINVAL)
+            fatal_errno ("prctl (PR_SET_NO_NEW_PRIVS)");
+          else if (prctl (PR_SET_SECUREBITS,
+                     SECBIT_NOROOT | SECBIT_NOROOT_LOCKED) < 0)
+            fatal_errno ("prctl (SECBIT_NOROOT)");
+        }
 
       /* This is necessary to undo the damage "sandbox" creates on Fedora
        * by making / a shared mount instead of private.  This isn't
@@ -342,8 +351,11 @@ main (int      argc,
        * pointed out that setuid binaries still change uid to 0.  So let's just
        * disallow them at the rootfs level.
        */
-      if (mount (NULL, "/", "none", MS_PRIVATE | MS_REMOUNT | MS_NOSUID, NULL) < 0)
-        fatal_errno ("mount(/, MS_PRIVATE | MS_REC | MS_NOSUID)");
+      if (!privileged)
+        {
+          if (mount (NULL, "/", "none", MS_PRIVATE | MS_REMOUNT | MS_NOSUID, NULL) < 0)
+            fatal_errno ("mount(/, MS_PRIVATE | MS_REC | MS_NOSUID)");
+        }
 
       /* Now let's set up our bind mounts */
       for (bind_mount_iter = bind_mounts; bind_mount_iter; bind_mount_iter = bind_mount_iter->next)
@@ -364,10 +376,17 @@ main (int      argc,
           else if (bind_mount_iter->type == MOUNT_SPEC_BIND)
             {
               if (fsuid_chdir (ruid, bind_mount_iter->source) < 0)
-                fatal ("Couldn't chdir to bind mount source");
-              if (mount (".", dest,
+                {
+                  if (mount (bind_mount_iter->source, dest,
                          NULL, MS_BIND | MS_PRIVATE, NULL) < 0)
-                fatal_errno ("mount (MS_BIND)");
+                    fatal ("Couldn't chdir to bind mount source");
+                }
+              else
+                {
+                  if (mount (".", dest,
+                         NULL, MS_BIND | MS_PRIVATE, NULL) < 0)
+                    fatal_errno ("mount (MS_BIND)");
+                }
             }
           else if (bind_mount_iter->type == MOUNT_SPEC_PROCFS)
             {
